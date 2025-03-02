@@ -1,43 +1,39 @@
-from fastapi import FastAPI, HTTPException
-from google.cloud import firestore
 import os
-from datetime import datetime, timedelta
-
-# 🔹 تهيئة Firestore
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service-account.json"
-db = firestore.Client()
+import json
+from google.cloud import firestore
+from google.oauth2 import service_account
+from fastapi import FastAPI
 
 app = FastAPI()
 
-# 🔹 API للتحقق من مفتاح التفعيل
+# 🔹 قراءة `service-account.json` من متغير بيئي في `Railway`
+service_account_info = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+credentials = service_account.Credentials.from_service_account_info(service_account_info)
+
+# 🔹 إنشاء `Firestore Client`
+db = firestore.Client(credentials=credentials)
+
+@app.get("/")
+def home():
+    return {"message": "FastAPI is running on Railway!"}
+
 @app.post("/verify-license/")
-async def verify_license(license_key: str, uuid: str):
-    try:
-        doc_ref = db.collection("activation_keys").document(license_key)
-        doc = doc_ref.get()
+def verify_license(license_key: str, uuid: str):
+    # 🔹 البحث عن المفتاح في Firestore
+    doc_ref = db.collection("activation_keys").document(license_key)
+    doc = doc_ref.get()
 
-        if not doc.exists:
-            raise HTTPException(status_code=404, detail="License key not found")
+    if not doc.exists:
+        return {"detail": "❌ License key not found"}
 
-        license_data = doc.to_dict()
-        stored_uuid = license_data.get("uuid")
-        activated_at = license_data.get("activated_at")
+    license_data = doc.to_dict()
 
-        # 🔹 التحقق مما إذا كان المفتاح مستخدمًا بالفعل على جهاز آخر
-        if stored_uuid and stored_uuid != uuid:
-            raise HTTPException(status_code=403, detail="License key already in use on another device")
+    # 🔹 التحقق من الـ UUID
+    if license_data.get("uuid") and license_data["uuid"] != uuid:
+        return {"detail": "❌ This key is already used on another device"}
 
-        # 🔹 حساب تاريخ انتهاء الصلاحية
-        if activated_at:
-            expiration_date = activated_at + timedelta(days=30)
-            if datetime.utcnow() > expiration_date:
-                raise HTTPException(status_code=403, detail="License key has expired")
+    # 🔹 تحديث UUID عند أول استخدام
+    if not license_data.get("uuid"):
+        doc_ref.update({"uuid": uuid})
 
-        # 🔹 تحديث UUID إذا كان المفتاح جديدًا
-        if not stored_uuid:
-            doc_ref.update({"uuid": uuid, "activated_at": datetime.utcnow()})
-        
-        return {"success": True, "message": "License is valid"}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"message": "✅ License key is valid!"}
